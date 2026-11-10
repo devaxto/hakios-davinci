@@ -44,7 +44,7 @@ jobs:
       - name: Install host dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang lld llvm flex bison m4 perl python3 autoconf automake ripgrep xz-utils curl git make gcc libtinfo6
+          sudo apt-get install -y clang lld llvm flex bison libfl-dev m4 perl python3 autoconf automake ripgrep xz-utils curl git make gcc uuid-dev libncurses-dev libtinfo6
 
       - name: Install Theos Linux toolchain and iPhoneOS 16.5 SDK
         run: |
@@ -67,35 +67,38 @@ jobs:
 
       - name: Apply XNU tree and build xnu-deps
         run: |
+          set -eo pipefail
+          mkdir -p dist
           export THEOS="$HOME/theos"
           export LD_LIBRARY_PATH="$HOME/theos/toolchain/linux/iphone/lib:${LD_LIBRARY_PATH:-}"
           export CFLAGS="-O2 -w -std=gnu11"
-          ./xnu/apply.sh
-          ./xnu-deps/setup.sh || {
+          ./xnu/apply.sh 2>&1 | tee -a dist/build.log
+          ./xnu-deps/setup.sh 2>&1 | tee -a dist/build.log || {
             for f in xnu-deps/*.log; do
-              [ -f "$f" ] && echo "=== $f ===" && tail -n 120 "$f"
+              [ -f "$f" ] && cp "$f" dist/ && echo "=== $f ===" && tail -n 120 "$f"
             done
             exit 1
           }
 
       - name: Build ath10k + SAE Wi-Fi object (WCN3990)
         run: |
+          set -eo pipefail
           export THEOS="$HOME/theos"
           export LD_LIBRARY_PATH="$HOME/theos/toolchain/linux/iphone/lib:${LD_LIBRARY_PATH:-}"
           source ./xnu-env.sh
-          python3 tools/mk-ath10k.py
+          python3 tools/mk-ath10k.py 2>&1 | tee -a dist/build.log
           ls -la xnu-deps/build/ath10k/out/ath10k.o
 
       - name: Build XNU kernel, loader.efi, and hello ramdisk
         run: |
+          set -eo pipefail
           export THEOS="$HOME/theos"
           export LD_LIBRARY_PATH="$HOME/theos/toolchain/linux/iphone/lib:${LD_LIBRARY_PATH:-}"
           source ./xnu-env.sh
-          WIFI_OBJECT="$PWD/xnu-deps/build/ath10k/out/ath10k.o" ./xnu-build.sh -j$(nproc) -k
+          WIFI_OBJECT="$PWD/xnu-deps/build/ath10k/out/ath10k.o" ./xnu-build.sh -j$(nproc) -k 2>&1 | tee -a dist/build.log
           PLACEHOLDER=1 ./xnuloader/mkidentity.sh
           ./xnuloader/build.sh
           make hello
-          mkdir -p dist
           cp xnu-src/xnu-8796.121.2/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837 dist/
           cp xnu-deps/build/ath10k/out/ath10k.o dist/
           cp xnuloader/loader.efi dist/

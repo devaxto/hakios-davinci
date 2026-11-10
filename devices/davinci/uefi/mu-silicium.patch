@@ -1,9 +1,15 @@
-diff --git a/BootShim/BootShim.S b/BootShim/BootShim.S
-index 69e9979..6b34ff7 100644
+﻿diff --git a/BootShim/BootShim.S b/BootShim/BootShim.S
+index 69e9979..74e0ff9 100644
 --- a/BootShim/BootShim.S
 +++ b/BootShim/BootShim.S
-@@ -33,6 +33,27 @@ _CopyLoop:
-   stp   x2, x3, [x5], #16
+@@ -30,9 +30,36 @@ skip_dtb:
+ 
+ _CopyLoop:
+   ldp   x2, x3, [x4], #16
+-  stp   x2, x3, [x5], #16
++  stp   x2, x3, [x5]
++  dc    civac, x5
++  add   x5, x5, #16
    subs  x6, x6, #16
    b.ne  _CopyLoop
 +
@@ -21,12 +27,16 @@ index 69e9979..6b34ff7 100644
 +
 +_PayloadLoop:
 +  ldp   x2, x3, [x4], #16
-+  stp   x2, x3, [x5], #16
++  stp   x2, x3, [x5]
++  dc    civac, x5
++  add   x5, x5, #16
 +  subs  x6, x6, #16
 +  b.ne  _PayloadLoop
 +
 +_NoPayload:
 +#endif
++  dsb   sy
++  isb
    ldr   x5, _StackBase
  
  _Entry:
@@ -51,8 +61,35 @@ index 1543243..5d69255 100644
 +	$(CC) ${CFLAGS} -c $< -o $@ -DCREATE_FDT_POINTER=$(CREATE_FDT_POINTER) -DFDT_POINTER_ADDRESS=$(FDT_POINTER_ADDRESS) -DUEFI_BASE=$(UEFI_BASE) -DUEFI_SIZE=$(UEFI_SIZE) -DPAYLOAD_BASE=$(PAYLOAD_BASE)
  
  BootShim.S:
+diff --git a/Silicon/Qualcomm/QcomPkg/Drivers/DynamicRamDxe/DynamicRamDxe.c b/Silicon/Qualcomm/QcomPkg/Drivers/DynamicRamDxe/DynamicRamDxe.c
+index cfae144..132866c 100644
+--- a/Silicon/Qualcomm/QcomPkg/Drivers/DynamicRamDxe/DynamicRamDxe.c
++++ b/Silicon/Qualcomm/QcomPkg/Drivers/DynamicRamDxe/DynamicRamDxe.c
+@@ -57,6 +57,22 @@ AddRamPartition (
+ 
+   if (Length <= 0) { return; }
+ 
++  // Keep the reserved XNU Payload region (0xF0000000 .. 0xF4000000) intact
++  if (Base < 0xF0000000ULL && Base + Length > 0xF0000000ULL) {
++    AddRamPartition (Base, 0xF0000000ULL - Base, ArmAttributes, EfiMemoryType);
++    if (Base + Length > 0xF4000000ULL) {
++      AddRamPartition (0xF4000000ULL, (Base + Length) - 0xF4000000ULL, ArmAttributes, EfiMemoryType);
++    }
++    return;
++  }
++  if (Base >= 0xF0000000ULL && Base < 0xF4000000ULL) {
++    if (Base + Length <= 0xF4000000ULL) {
++      return;
++    }
++    Length = (Base + Length) - 0xF4000000ULL;
++    Base   = 0xF4000000ULL;
++  }
++
+   switch (EfiMemoryType) {
+     case EfiConventionalMemory:
+       EfiGcdMemoryType = EfiGcdMemoryTypeSystemMemory;
 diff --git a/Silicon/Silicium/SiliciumPkg/Library/PlatformBootManagerLib/PlatformBootManagerLib.c b/Silicon/Silicium/SiliciumPkg/Library/PlatformBootManagerLib/PlatformBootManagerLib.c
-index a8f3485..e4112f2 100644
+index a8f3485..9a1cfa7 100644
 --- a/Silicon/Silicium/SiliciumPkg/Library/PlatformBootManagerLib/PlatformBootManagerLib.c
 +++ b/Silicon/Silicium/SiliciumPkg/Library/PlatformBootManagerLib/PlatformBootManagerLib.c
 @@ -30,6 +30,8 @@
@@ -64,35 +101,758 @@ index a8f3485..e4112f2 100644
  //
  // Platform Consoles List
  //
-@@ -261,6 +263,11 @@ PlatformBootManagerAfterConsole ()
+@@ -219,9 +221,11 @@ VOID
+ EFIAPI
+ PlatformBootManagerAfterConsole ()
+ {
+-  EFI_STATUS    Status   = EFI_SUCCESS;
+   EFI_BOOT_MODE BootMode = GetBootModeHob ();
  
-   // Proccess Capsules
-   ProcessCapsules ();
++#ifndef XNU_PAYLOAD_BOOT
++  EFI_STATUS    Status   = EFI_SUCCESS;
 +
+   // Platform DSDT Table Updates
+   PlatformUpdateAcpiTables ();
+ 
+@@ -233,6 +237,7 @@ PlatformBootManagerAfterConsole ()
+   if (EFI_ERROR (Status)) {
+     DEBUG ((EFI_D_ERROR, "%a: Failed to Display Boot Logo! Status = %r\n", __FUNCTION__, Status));
+   }
++#endif
+ 
+   // Run Boot Mode Config
+   switch (BootMode) {
+@@ -259,6 +264,11 @@ PlatformBootManagerAfterConsole ()
+       ASSERT_EFI_ERROR (EFI_UNSUPPORTED);
+   }
+ 
 +#ifdef XNU_PAYLOAD_BOOT
 +  // The RAM payload is the boot target; do not try installed boot options first.
 +  XnuLoaderMain ();
 +#endif
++
+   // Proccess Capsules
+   ProcessCapsules ();
  }
- 
- VOID
 diff --git a/Silicon/Silicium/SiliciumPkg/Library/PlatformBootManagerLib/PlatformBootManagerLib.inf b/Silicon/Silicium/SiliciumPkg/Library/PlatformBootManagerLib/PlatformBootManagerLib.inf
-index fa203c2..c1dc359 100644
+index fa203c2..0da72fb 100644
 --- a/Silicon/Silicium/SiliciumPkg/Library/PlatformBootManagerLib/PlatformBootManagerLib.inf
 +++ b/Silicon/Silicium/SiliciumPkg/Library/PlatformBootManagerLib/PlatformBootManagerLib.inf
-@@ -15,6 +15,7 @@
- 
- [Sources]
-   PlatformBootManagerLib.c
+@@ -1,65 +1,69 @@
+-##
+-#  Copyright (C) Microsoft Corporation. All rights reserved.
+-#  SPDX-License-Identifier: BSD-2-Clause-Patent
+-##
+-
+-[Defines]
+-  INF_VERSION                    = 0x00010018
+-  BASE_NAME                      = PlatformBootManagerLib
+-  FILE_GUID                      = DF8F3324-5448-46BC-872C-BE198ECF2F76
+-  VERSION_STRING                 = 1.0
+-  MODULE_TYPE                    = DXE_DRIVER
+-  UEFI_SPECIFICATION_VERSION     = 2.7
+-  LIBRARY_CLASS                  = PlatformBootManagerLib|DXE_DRIVER
+-  CONSTRUCTOR                    = PlatformBootManagerEntry
+-
+-[Sources]
+-  PlatformBootManagerLib.c
+-
+-[Packages]
+-  MdePkg/MdePkg.dec
+-  PcBdsPkg/PcBdsPkg.dec
+-  MsCorePkg/MsCorePkg.dec
+-  MsGraphicsPkg/MsGraphicsPkg.dec
+-  MdeModulePkg/MdeModulePkg.dec
+-  SiliciumPkg/SiliciumPkg.dec
+-
+-[LibraryClasses]
+-  DebugLib
+-  BaseMemoryLib
+-  UefiBootServicesTableLib
+-  MemoryAllocationLib
+-  MsBootOptionsLib
+-  MsBootPolicyLib
+-  BootGraphicsLib
+-  UefiRuntimeServicesTableLib
+-  AcpiPlatformUpdateLib
+-  DxeServicesTableLib
+-  AcpiDeviceUpdateLib
+-  PerformanceLib
+-  DevicePathLib
+-  CapsuleLib
+-  PrintLib
+-  UefiLib
+-  HobLib
+-  PcdLib
+-
+-[Pcd]
+-  gEfiMdePkgTokenSpaceGuid.PcdPlatformBootTimeOut
+-
+-[FixedPcd]
+-  gSiliciumPkgTokenSpaceGuid.PcdSpecialApp
+-  gSiliciumPkgTokenSpaceGuid.PcdSpecialAppName
+-
+-[Guids]
+-  gEfiEndOfDxeEventGroupGuid
+-  gEfiGlobalVariableGuid
+-  gMsStartOfBdsNotifyGuid
+-  gMsBootMenuFormsetGuid
+-  gEfiEventPreReadyToBootGuid
+-  gEfiEventPostReadyToBootGuid
+-
+-[Protocols]
+-  gEfiDxeSmmReadyToLockProtocolGuid
+-  gEfiAbsolutePointerProtocolGuid
+-  gEfiGraphicsOutputProtocolGuid
++##
++#  Copyright (C) Microsoft Corporation. All rights reserved.
++#  SPDX-License-Identifier: BSD-2-Clause-Patent
++##
++
++[Defines]
++  INF_VERSION                    = 0x00010018
++  BASE_NAME                      = PlatformBootManagerLib
++  FILE_GUID                      = DF8F3324-5448-46BC-872C-BE198ECF2F76
++  VERSION_STRING                 = 1.0
++  MODULE_TYPE                    = DXE_DRIVER
++  UEFI_SPECIFICATION_VERSION     = 2.7
++  LIBRARY_CLASS                  = PlatformBootManagerLib|DXE_DRIVER
++  CONSTRUCTOR                    = PlatformBootManagerEntry
++
++[Sources]
++  PlatformBootManagerLib.c
 +  XnuLoader.c
- 
- [Packages]
-   MdePkg/MdePkg.dec
-@@ -27,6 +28,7 @@
- [LibraryClasses]
-   DebugLib
-   BaseMemoryLib
++
++[Packages]
++  MdePkg/MdePkg.dec
++  PcBdsPkg/PcBdsPkg.dec
++  MsCorePkg/MsCorePkg.dec
++  MsGraphicsPkg/MsGraphicsPkg.dec
++  MdeModulePkg/MdeModulePkg.dec
++  SiliciumPkg/SiliciumPkg.dec
++
++[LibraryClasses]
++  DebugLib
++  BaseMemoryLib
 +  BaseLib
-   UefiBootServicesTableLib
-   MemoryAllocationLib
-   MsBootOptionsLib
++  UefiBootServicesTableLib
++  MemoryAllocationLib
++  MsBootOptionsLib
++  MsBootPolicyLib
++  BootGraphicsLib
++  UefiRuntimeServicesTableLib
++  AcpiPlatformUpdateLib
++  DxeServicesTableLib
++  AcpiDeviceUpdateLib
++  PerformanceLib
++  DevicePathLib
++  CapsuleLib
++  PrintLib
++  UefiLib
++  HobLib
++  PcdLib
++
++[Pcd]
++  gEfiMdePkgTokenSpaceGuid.PcdPlatformBootTimeOut
++
++[FixedPcd]
++  gSiliciumPkgTokenSpaceGuid.PcdSpecialApp
++  gSiliciumPkgTokenSpaceGuid.PcdSpecialAppName
++
++[Guids]
++  gEfiEndOfDxeEventGroupGuid
++  gEfiGlobalVariableGuid
++  gMsStartOfBdsNotifyGuid
++  gMsBootMenuFormsetGuid
++  gEfiEventPreReadyToBootGuid
++  gEfiEventPostReadyToBootGuid
++
++[Protocols]
++  gEfiDxeSmmReadyToLockProtocolGuid
++  gEfiAbsolutePointerProtocolGuid
++  gEfiGraphicsOutputProtocolGuid
++  gEfiBlockIoProtocolGuid
++  gEfiPartitionInfoProtocolGuid
+diff --git a/Silicon/Silicium/SiliciumPkg/PrePi/PrePi.c b/Silicon/Silicium/SiliciumPkg/PrePi/PrePi.c
+index ebf29d5..8f464a9 100644
+--- a/Silicon/Silicium/SiliciumPkg/PrePi/PrePi.c
++++ b/Silicon/Silicium/SiliciumPkg/PrePi/PrePi.c
+@@ -1,283 +1,295 @@
+-/**
+-  Copyright (c) 2011-2017, ARM Limited. All rights reserved.
+-  SPDX-License-Identifier: BSD-2-Clause-Patent
+-**/
+-
+-#include <Library/CacheMaintenanceLib.h>
+-#include <Library/DebugAgentLib.h>
+-#include <Library/PrePiLib.h>
+-#include <Library/PrePiHobListPointerLib.h>
+-#include <Library/TimerLib.h>
+-#include <Library/PerformanceLib.h>
+-#include <Library/MemoryMapHelperLib.h>
+-#include <Library/SoCPlatformLib.h>
+-#include <Library/PcdLib.h>
+-#include <Library/BaseMemoryLib.h>
+-#include <Library/DebugLib.h>
+-#include <Library/SerialPortLib.h>
+-#include <Library/PlatformPrePiLib.h>
+-#include <Library/MemoryProtectionLib.h>
+-
+-#include <Ppi/SecPerformance.h>
+-
+-#include "PrePi.h"
+-
+-//
+-// Global Variables
+-//
+-STATIC ARM_MEMORY_REGION_DESCRIPTOR_EX UefiFdRegion;
+-
+-EFI_STATUS
+-PrePeiCoreGetMpCoreInfo (
+-  OUT UINTN          *CoreCount,
+-  OUT ARM_CORE_INFO **ArmCoreTable)
+-{
+-  // Get Core Table & Count
+-  *ArmCoreTable = GetCoreTable ();
+-  *CoreCount    = sizeof (ArmCoreTable);
+-
+-  return EFI_SUCCESS;
+-}
+-
+-ARM_MP_CORE_INFO_PPI mMpCoreInfoPpi = { PrePeiCoreGetMpCoreInfo };
+-
+-EFI_PEI_PPI_DESCRIPTOR gPlatformPpiTable[] = {
+-  {
+-    EFI_PEI_PPI_DESCRIPTOR_PPI,
+-    &gArmMpCoreInfoPpiGuid,
+-    &mMpCoreInfoPpi
+-  }
+-};
+-
+-EFI_STATUS
+-GetPlatformPpi (
+-  IN  EFI_GUID  *PpiGuid,
+-  OUT VOID     **Ppi)
+-{
+-  UINTN                   PpiListSize  = sizeof (gPlatformPpiTable);
+-  UINTN                   PpiListCount = PpiListSize / sizeof (EFI_PEI_PPI_DESCRIPTOR);
+-  EFI_PEI_PPI_DESCRIPTOR *PpiList      = gPlatformPpiTable;
+-
+-  // Get Correct Ppi
+-  for (UINTN Index = 0; Index < PpiListCount; Index++, PpiList++) {
+-    // Compare GUIDs
+-    if (CompareGuid (PpiList->Guid, PpiGuid) == TRUE) {
+-      *Ppi = PpiList->Ppi;
+-      return EFI_SUCCESS;
+-    }
+-  }
+-
+-  return EFI_NOT_FOUND;
+-}
+-
+-VOID
+-PrePiMain (IN UINT64 StartTimeStamp)
+-{
+-  EFI_STATUS                      Status;
+-  EFI_HOB_HANDOFF_INFO_TABLE     *HobList;
+-  ARM_MEMORY_REGION_DESCRIPTOR_EX DxeHeapRegion;
+-  ARM_MEMORY_REGION_DESCRIPTOR_EX UefiStackRegion;
+-  FIRMWARE_SEC_PERFORMANCE        Performance;
+-
+-  // Locate "DXE Heap" Memory Region
+-  Status = LocateMemoryMapAreaByName ("DXE Heap", &DxeHeapRegion);
+-  if (EFI_ERROR (Status)) {
+-    // Locate "DXE_Heap" Memory Region
+-    Status = LocateMemoryMapAreaByName ("DXE_Heap", &DxeHeapRegion);
+-    if (EFI_ERROR (Status)) {
+-      DEBUG ((EFI_D_ERROR, "Failed to Locate 'DXE Heap' Memory Region!\n"));
+-      ASSERT_EFI_ERROR (Status);
+-    }
+-  }
+-
+-  // Locate "UEFI Stack" Memory Region
+-  Status = LocateMemoryMapAreaByName ("UEFI Stack", &UefiStackRegion);
+-  if (EFI_ERROR (Status)) {
+-    // Locate "UEFI_Stack" Memory Region
+-    Status = LocateMemoryMapAreaByName ("UEFI_Stack", &UefiStackRegion);
+-    if (EFI_ERROR (Status)) {
+-      DEBUG ((EFI_D_ERROR, "Failed to Locate 'UEFI Stack' Memory Region!\n"));
+-      ASSERT_EFI_ERROR (Status);
+-    }
+-  }
+-
+-  // Declare UEFI Regions
+-  UINTN MemoryBase     = FixedPcdGet32 (PcdSystemMemoryBase);
+-  UINTN UefiMemoryBase = DxeHeapRegion.Address;
+-  UINTN UefiMemorySize = DxeHeapRegion.Length;
+-  UINTN StacksSize     = UefiStackRegion.Length;
+-  UINTN StacksBase     = UefiMemoryBase + UefiMemorySize - StacksSize;
+-
+-  // Check UEFI Memory Location
+-  ASSERT (IS_XIP () || ((UefiFdRegion.Address >= MemoryBase) && ((UINT64)(UefiFdRegion.Address + UefiFdRegion.Length) <= (UINT64)mSystemMemoryEnd)));
+-
+-  // Init Architecture Specific Bits
+-  ArchInitialize ();
+-
+-  // Init Debug Agent
+-  InitializeDebugAgent (DEBUG_AGENT_INIT_POSTMEM_SEC, NULL, NULL);
+-
+-  // Set Debug Timer Interrupt
+-  SaveAndSetDebugTimerInterrupt (TRUE);
+-
+-  // Declare PI/UEFI Memory Region
+-  HobList = HobConstructor ((VOID *)UefiMemoryBase, UefiMemorySize, (VOID *)UefiMemoryBase, (VOID *)StacksBase);
+-  PrePeiSetHobList (HobList);
+-
+-  DEBUG ((EFI_D_WARN, "MMU In\r"));
+-
+-  // Init MMU and Build Memory HOBs
+-  Status = MemoryPeim (UefiMemoryBase, UefiMemorySize);
+-  if (EFI_ERROR (Status)) {
+-    DEBUG ((EFI_D_ERROR, "Failed to Enable MMU and Build Memory HOBs!\n"));
+-    ASSERT_EFI_ERROR (Status);
+-  }
+-
+-  // Build Stack HOB
+-  BuildStackHob (StacksBase, StacksSize);
+-
+-  // Build CPU HOB
+-  BuildCpuHob ((UINT8)ArmGetPhysicalAddressBits (), PcdGet8 (PcdPrePiCpuIoSize));
+-
+-  // Check for MP Core
+-  if (ArmIsMpCore ()) {
+-    ARM_MP_CORE_INFO_PPI *ArmMpCoreInfoPpi = NULL;
+-    ARM_CORE_INFO        *ArmCoreInfoTable = NULL;
+-    UINTN                 ArmCoreCount     = 0;
+-
+-    // Get Platform Ppi
+-    Status = GetPlatformPpi (&gArmMpCoreInfoPpiGuid, (VOID *)&ArmMpCoreInfoPpi);
+-    if (EFI_ERROR (Status)) {
+-      DEBUG ((EFI_D_ERROR, "Failed to Get Platform PPI!\n"));
+-      ASSERT_EFI_ERROR (Status);
+-    }
+-
+-    // Get MP Core Infos
+-    Status = ArmMpCoreInfoPpi->GetMpCoreInfo (&ArmCoreCount, &ArmCoreInfoTable);
+-    if (!EFI_ERROR (Status) && ArmCoreCount > 0) {
+-      // Build MP Core Data HOB
+-      BuildGuidDataHob (&gArmMpCoreInfoGuid, ArmCoreInfoTable, sizeof (ARM_CORE_INFO) * ArmCoreCount);
+-    }
+-  }
+-
+-  // Store Timer Value
+-  Performance.ResetEnd = GetTimeInNanoSecond (StartTimeStamp);
+-
+-  // Build SEC Performance Data HOB
+-  BuildGuidDataHob (&gEfiFirmwarePerformanceGuid, &Performance, sizeof (Performance));
+-
+-  // Set Boot Mode
+-  SetBootMode (BOOT_WITH_DEFAULT_SETTINGS);
+-
+-  // Init Platform HOBs
+-  PlatformPeim ();
+-
+-  // Enable Memory Protection
+-  EnableMemoryProtection ();
+-
+-  // Register Performance Info
+-  PERF_START (NULL, "PEI", NULL, StartTimeStamp);
+-
+-  // Run Library Constructors
+-  ProcessLibraryConstructorList ();
+-
+-  // Decompress FV
+-  Status = DecompressFirstFv ();
+-  if (EFI_ERROR (Status)) {
+-    DEBUG ((EFI_D_ERROR, "Failed to Decompress FV!\n"));
+-    ASSERT_EFI_ERROR (Status);
+-  }
+-
+-  // Load DXE Core
+-  Status = LoadDxeCoreFromFv (NULL, 0);
+-  if (EFI_ERROR (Status)) {
+-    DEBUG ((EFI_D_ERROR, "Failed to Load DXE Core from FV!\n"));
+-    ASSERT_EFI_ERROR (Status);
+-  }
+-}
+-
+-VOID
+-CEntryPoint ()
+-{
+-  EFI_STATUS                      Status;
+-  ARM_MEMORY_REGION_DESCRIPTOR_EX DisplayRegion;
+-  ARM_MEMORY_REGION_DESCRIPTOR_EX CpuVectorsRegion;
+-  UINT64                          StartTimeStamp;
+-
+-  // Locate "CPU Vectors" Memory Region
+-  Status = LocateMemoryMapAreaByName ("CPU Vectors", &CpuVectorsRegion);
+-  if (EFI_ERROR (Status)) {
+-    // Locate "CPU_Vectors" Memory Region
+-    ASSERT_EFI_ERROR (LocateMemoryMapAreaByName ("CPU_Vectors", &CpuVectorsRegion));
+-  }
+-
+-  // Write Vector Table Address
+-  ArmWriteVBar (CpuVectorsRegion.Address);
+-
+-  // Run SoC Specific Code
+-  PlatformInitialize ();
+-
+-  //
+-  // !!! Make this Debug only !!!
+-  //
+-
+-  // Locate 'Display Reserved' Memory Region
+-  Status = LocateMemoryMapAreaByName ("Display Reserved", &DisplayRegion);
+-  if (!EFI_ERROR (Status)) {
+-    // Clear Display
+-    ZeroMem ((VOID *)DisplayRegion.Address, DisplayRegion.Length);
+-  }
+-
+-  // Locate 'Display_Reserved' Memory Region
+-  Status = LocateMemoryMapAreaByName ("Display_Reserved", &DisplayRegion);
+-  if (!EFI_ERROR (Status)) {
+-    // Clear Display
+-    ZeroMem ((VOID *)DisplayRegion.Address, DisplayRegion.Length);
+-  }
+-
+-  //
+-  // !!! Make this Debug only !!!
+-  //
+-
+-  // Init Serial Port
+-  SerialPortInitialize ();
+-
+-  // Print UEFI Version Message
+-  DEBUG ((EFI_D_WARN, "\n"));
+-  DEBUG ((EFI_D_WARN, "Project Silicium for %a\n",               FixedPcdGetPtr (PcdSmbiosSystemModel)));
+-  DEBUG ((EFI_D_WARN, "Firmware Version %s Build at %a on %a\n", PcdGetPtr (PcdFirmwareVersionString), __TIME__, __DATE__));
+-  DEBUG ((EFI_D_WARN, "\n"));
+-
+-  if (PerformanceMeasurementEnabled ()) {
+-    // Get Start Time Stamp
+-    StartTimeStamp = GetPerformanceCounter ();
+-  } else {
+-    // Set Dummy Start Time Stamp Value
+-    StartTimeStamp = 0;
+-  }
+-
+-  // Check UEFI Memory Location
+-  if (!IS_XIP ()) {
+-    if (ArmIsMpCore ()) {
+-      // Signal Variable Region is Defined
+-      ArmCallSEV ();
+-    }
+-  }
+-
+-  // Locate "UEFI FD" Memory Region
+-  Status = LocateMemoryMapAreaByName ("UEFI FD", &UefiFdRegion);
+-  if (EFI_ERROR (Status)) {
+-    // Locate "UEFI_FD" Memory Region
+-    Status = LocateMemoryMapAreaByName ("UEFI_FD", &UefiFdRegion);
+-    if (EFI_ERROR (Status)) {
+-      DEBUG ((EFI_D_ERROR, "Failed to Locate 'UEFI FD' Memory Region!\n"));
+-      ASSERT_EFI_ERROR (Status);
+-    }
+-  }
+-
+-  // Invalidate Data Cache
+-  InvalidateDataCacheRange ((VOID *)UefiFdRegion.Address, UefiFdRegion.Length);
+-
+-  // Go to Main Function
+-  PrePiMain (StartTimeStamp);
+-}
++/**
++  Copyright (c) 2011-2017, ARM Limited. All rights reserved.
++  SPDX-License-Identifier: BSD-2-Clause-Patent
++**/
++
++#include <Library/CacheMaintenanceLib.h>
++#include <Library/DebugAgentLib.h>
++#include <Library/PrePiLib.h>
++#include <Library/PrePiHobListPointerLib.h>
++#include <Library/TimerLib.h>
++#include <Library/PerformanceLib.h>
++#include <Library/MemoryMapHelperLib.h>
++#include <Library/SoCPlatformLib.h>
++#include <Library/PcdLib.h>
++#include <Library/BaseMemoryLib.h>
++#include <Library/DebugLib.h>
++#include <Library/SerialPortLib.h>
++#include <Library/PlatformPrePiLib.h>
++#include <Library/MemoryProtectionLib.h>
++
++#include <Ppi/SecPerformance.h>
++
++#include "PrePi.h"
++
++//
++// Global Variables
++//
++STATIC ARM_MEMORY_REGION_DESCRIPTOR_EX UefiFdRegion;
++
++EFI_STATUS
++PrePeiCoreGetMpCoreInfo (
++  OUT UINTN          *CoreCount,
++  OUT ARM_CORE_INFO **ArmCoreTable)
++{
++  // Get Core Table & Count
++  *ArmCoreTable = GetCoreTable ();
++  *CoreCount    = sizeof (ArmCoreTable);
++
++  return EFI_SUCCESS;
++}
++
++ARM_MP_CORE_INFO_PPI mMpCoreInfoPpi = { PrePeiCoreGetMpCoreInfo };
++
++EFI_PEI_PPI_DESCRIPTOR gPlatformPpiTable[] = {
++  {
++    EFI_PEI_PPI_DESCRIPTOR_PPI,
++    &gArmMpCoreInfoPpiGuid,
++    &mMpCoreInfoPpi
++  }
++};
++
++EFI_STATUS
++GetPlatformPpi (
++  IN  EFI_GUID  *PpiGuid,
++  OUT VOID     **Ppi)
++{
++  UINTN                   PpiListSize  = sizeof (gPlatformPpiTable);
++  UINTN                   PpiListCount = PpiListSize / sizeof (EFI_PEI_PPI_DESCRIPTOR);
++  EFI_PEI_PPI_DESCRIPTOR *PpiList      = gPlatformPpiTable;
++
++  // Get Correct Ppi
++  for (UINTN Index = 0; Index < PpiListCount; Index++, PpiList++) {
++    // Compare GUIDs
++    if (CompareGuid (PpiList->Guid, PpiGuid) == TRUE) {
++      *Ppi = PpiList->Ppi;
++      return EFI_SUCCESS;
++    }
++  }
++
++  return EFI_NOT_FOUND;
++}
++
++VOID
++PrePiMain (IN UINT64 StartTimeStamp)
++{
++  EFI_STATUS                      Status;
++  EFI_HOB_HANDOFF_INFO_TABLE     *HobList;
++  ARM_MEMORY_REGION_DESCRIPTOR_EX DxeHeapRegion;
++  ARM_MEMORY_REGION_DESCRIPTOR_EX UefiStackRegion;
++  FIRMWARE_SEC_PERFORMANCE        Performance;
++
++  // Locate "DXE Heap" Memory Region
++  Status = LocateMemoryMapAreaByName ("DXE Heap", &DxeHeapRegion);
++  if (EFI_ERROR (Status)) {
++    // Locate "DXE_Heap" Memory Region
++    Status = LocateMemoryMapAreaByName ("DXE_Heap", &DxeHeapRegion);
++    if (EFI_ERROR (Status)) {
++      DEBUG ((EFI_D_ERROR, "Failed to Locate 'DXE Heap' Memory Region!\n"));
++      ASSERT_EFI_ERROR (Status);
++    }
++  }
++
++  // Locate "UEFI Stack" Memory Region
++  Status = LocateMemoryMapAreaByName ("UEFI Stack", &UefiStackRegion);
++  if (EFI_ERROR (Status)) {
++    // Locate "UEFI_Stack" Memory Region
++    Status = LocateMemoryMapAreaByName ("UEFI_Stack", &UefiStackRegion);
++    if (EFI_ERROR (Status)) {
++      DEBUG ((EFI_D_ERROR, "Failed to Locate 'UEFI Stack' Memory Region!\n"));
++      ASSERT_EFI_ERROR (Status);
++    }
++  }
++
++  // Declare UEFI Regions
++  UINTN MemoryBase     = FixedPcdGet32 (PcdSystemMemoryBase);
++  UINTN UefiMemoryBase = DxeHeapRegion.Address;
++  UINTN UefiMemorySize = DxeHeapRegion.Length;
++  UINTN StacksSize     = UefiStackRegion.Length;
++  UINTN StacksBase     = UefiMemoryBase + UefiMemorySize - StacksSize;
++
++  // Check UEFI Memory Location
++  ASSERT (IS_XIP () || ((UefiFdRegion.Address >= MemoryBase) && ((UINT64)(UefiFdRegion.Address + UefiFdRegion.Length) <= (UINT64)mSystemMemoryEnd)));
++
++  // Init Architecture Specific Bits
++  ArchInitialize ();
++
++  // Init Debug Agent
++  InitializeDebugAgent (DEBUG_AGENT_INIT_POSTMEM_SEC, NULL, NULL);
++
++  // Set Debug Timer Interrupt
++  SaveAndSetDebugTimerInterrupt (TRUE);
++
++  // Declare PI/UEFI Memory Region
++  HobList = HobConstructor ((VOID *)UefiMemoryBase, UefiMemorySize, (VOID *)UefiMemoryBase, (VOID *)StacksBase);
++  PrePeiSetHobList (HobList);
++
++  DEBUG ((EFI_D_WARN, "MMU In\r"));
++
++  // Init MMU and Build Memory HOBs
++  Status = MemoryPeim (UefiMemoryBase, UefiMemorySize);
++  if (EFI_ERROR (Status)) {
++    DEBUG ((EFI_D_ERROR, "Failed to Enable MMU and Build Memory HOBs!\n"));
++    ASSERT_EFI_ERROR (Status);
++  }
++
++  // Build Stack HOB
++  BuildStackHob (StacksBase, StacksSize);
++
++  // Build CPU HOB
++  BuildCpuHob ((UINT8)ArmGetPhysicalAddressBits (), PcdGet8 (PcdPrePiCpuIoSize));
++
++  // Check for MP Core
++  if (ArmIsMpCore ()) {
++    ARM_MP_CORE_INFO_PPI *ArmMpCoreInfoPpi = NULL;
++    ARM_CORE_INFO        *ArmCoreInfoTable = NULL;
++    UINTN                 ArmCoreCount     = 0;
++
++    // Get Platform Ppi
++    Status = GetPlatformPpi (&gArmMpCoreInfoPpiGuid, (VOID *)&ArmMpCoreInfoPpi);
++    if (EFI_ERROR (Status)) {
++      DEBUG ((EFI_D_ERROR, "Failed to Get Platform PPI!\n"));
++      ASSERT_EFI_ERROR (Status);
++    }
++
++    // Get MP Core Infos
++    Status = ArmMpCoreInfoPpi->GetMpCoreInfo (&ArmCoreCount, &ArmCoreInfoTable);
++    if (!EFI_ERROR (Status) && ArmCoreCount > 0) {
++      // Build MP Core Data HOB
++      BuildGuidDataHob (&gArmMpCoreInfoGuid, ArmCoreInfoTable, sizeof (ARM_CORE_INFO) * ArmCoreCount);
++    }
++  }
++
++  // Store Timer Value
++  Performance.ResetEnd = GetTimeInNanoSecond (StartTimeStamp);
++
++  // Build SEC Performance Data HOB
++  BuildGuidDataHob (&gEfiFirmwarePerformanceGuid, &Performance, sizeof (Performance));
++
++  // Set Boot Mode
++  SetBootMode (BOOT_WITH_DEFAULT_SETTINGS);
++
++  // Init Platform HOBs
++  PlatformPeim ();
++
++  // Enable Memory Protection
++  EnableMemoryProtection ();
++
++  // Register Performance Info
++  PERF_START (NULL, "PEI", NULL, StartTimeStamp);
++
++  // Run Library Constructors
++  ProcessLibraryConstructorList ();
++
++  // Decompress FV
++  Status = DecompressFirstFv ();
++  if (EFI_ERROR (Status)) {
++    DEBUG ((EFI_D_ERROR, "Failed to Decompress FV!\n"));
++    ASSERT_EFI_ERROR (Status);
++  }
++
++  // Load DXE Core
++  Status = LoadDxeCoreFromFv (NULL, 0);
++  if (EFI_ERROR (Status)) {
++    DEBUG ((EFI_D_ERROR, "Failed to Load DXE Core from FV!\n"));
++    ASSERT_EFI_ERROR (Status);
++  }
++}
++
++VOID
++CEntryPoint ()
++{
++  EFI_STATUS                      Status;
++  ARM_MEMORY_REGION_DESCRIPTOR_EX DisplayRegion;
++  ARM_MEMORY_REGION_DESCRIPTOR_EX CpuVectorsRegion;
++  UINT64                          StartTimeStamp;
++
++  // Locate "CPU Vectors" Memory Region
++  Status = LocateMemoryMapAreaByName ("CPU Vectors", &CpuVectorsRegion);
++  if (EFI_ERROR (Status)) {
++    // Locate "CPU_Vectors" Memory Region
++    ASSERT_EFI_ERROR (LocateMemoryMapAreaByName ("CPU_Vectors", &CpuVectorsRegion));
++  }
++
++  // Write Vector Table Address
++  ArmWriteVBar (CpuVectorsRegion.Address);
++
++  // Run SoC Specific Code
++  PlatformInitialize ();
++
++  // Enable PingPong 0 tear-check autorefresh on SM7150 command-mode DSI panel
++  {
++    volatile UINT32 *PingPong = (volatile UINT32 *)(UINTN)0x0AE71000;
++    volatile UINT32 *Ctl      = (volatile UINT32 *)(UINTN)0x0AE02000;
++    if (PingPong[0] & 1U) {
++      PingPong[0x30 / 4] = BIT31 | 1U;
++      ArmDataSynchronizationBarrier ();
++      Ctl[0x1C / 4] = 1;
++      ArmDataSynchronizationBarrier ();
++    }
++  }
++
++  //
++  // !!! Make this Debug only !!!
++  //
++
++  // Locate 'Display Reserved' Memory Region
++  Status = LocateMemoryMapAreaByName ("Display Reserved", &DisplayRegion);
++  if (!EFI_ERROR (Status)) {
++    // Clear Display
++    ZeroMem ((VOID *)DisplayRegion.Address, DisplayRegion.Length);
++  }
++
++  // Locate 'Display_Reserved' Memory Region
++  Status = LocateMemoryMapAreaByName ("Display_Reserved", &DisplayRegion);
++  if (!EFI_ERROR (Status)) {
++    // Clear Display
++    ZeroMem ((VOID *)DisplayRegion.Address, DisplayRegion.Length);
++  }
++
++  //
++  // !!! Make this Debug only !!!
++  //
++
++  // Init Serial Port
++  SerialPortInitialize ();
++
++  // Print UEFI Version Message
++  DEBUG ((EFI_D_WARN, "\n"));
++  DEBUG ((EFI_D_WARN, "Project Silicium for %a\n",               FixedPcdGetPtr (PcdSmbiosSystemModel)));
++  DEBUG ((EFI_D_WARN, "Firmware Version %s Build at %a on %a\n", PcdGetPtr (PcdFirmwareVersionString), __TIME__, __DATE__));
++  DEBUG ((EFI_D_WARN, "\n"));
++
++  if (PerformanceMeasurementEnabled ()) {
++    // Get Start Time Stamp
++    StartTimeStamp = GetPerformanceCounter ();
++  } else {
++    // Set Dummy Start Time Stamp Value
++    StartTimeStamp = 0;
++  }
++
++  // Check UEFI Memory Location
++  if (!IS_XIP ()) {
++    if (ArmIsMpCore ()) {
++      // Signal Variable Region is Defined
++      ArmCallSEV ();
++    }
++  }
++
++  // Locate "UEFI FD" Memory Region
++  Status = LocateMemoryMapAreaByName ("UEFI FD", &UefiFdRegion);
++  if (EFI_ERROR (Status)) {
++    // Locate "UEFI_FD" Memory Region
++    Status = LocateMemoryMapAreaByName ("UEFI_FD", &UefiFdRegion);
++    if (EFI_ERROR (Status)) {
++      DEBUG ((EFI_D_ERROR, "Failed to Locate 'UEFI FD' Memory Region!\n"));
++      ASSERT_EFI_ERROR (Status);
++    }
++  }
++
++  // Invalidate Data Cache
++  InvalidateDataCacheRange ((VOID *)UefiFdRegion.Address, UefiFdRegion.Length);
++
++  // Go to Main Function
++  PrePiMain (StartTimeStamp);
++}

@@ -23,7 +23,7 @@
   BUILD_TARGETS                  = RELEASE|DEBUG
   SKUID_IDENTIFIER               = DEFAULT
   FLASH_DEFINITION               = davinciPkg/davinci.fdf
-  USE_CUSTOM_DISPLAY_DRIVER      = 1
+  USE_CUSTOM_DISPLAY_DRIVER      = 0
   HAS_BUILD_IN_KEYBOARD          = 0
 
   #
@@ -35,8 +35,8 @@
 
 [BuildOptions]
   *_*_*_CC_FLAGS = -DSOC_TYPE=$(SOC_TYPE) -DHAS_BUILD_IN_KEYBOARD=$(HAS_BUILD_IN_KEYBOARD)
-  # XNU chain: start the loader out of the RAM payload, and never write a diagnostics log to the store
-  *_CLANGPDB_AARCH64_CC_FLAGS = -DXNU_NO_DISK_LOG -DXNU_PAYLOAD_BOOT
+  # XNU chain: start the loader out of the RAM payload, and write diagnostics to logdump
+  *_CLANGPDB_AARCH64_CC_FLAGS = -DXNU_PAYLOAD_BOOT
 
 [PcdsFixedAtBuild]
   # DDR Start Address
@@ -65,10 +65,10 @@
   gQcomPkgTokenSpaceGuid.PcdPlatformType|"WP"
 
   # Dynamic RAM Start Address
-  gQcomPkgTokenSpaceGuid.PcdRamPartitionBase|0xA0000000
+  gQcomPkgTokenSpaceGuid.PcdRamPartitionBase|0xD0000000
 
   # USB Controller
-  gQcomPkgTokenSpaceGuid.PcdStartUsbController|TRUE
+  gQcomPkgTokenSpaceGuid.PcdStartUsbController|FALSE
   
 [PcdsDynamicDefault]
   gEfiMdeModulePkgTokenSpaceGuid.PcdVideoHorizontalResolution|1080

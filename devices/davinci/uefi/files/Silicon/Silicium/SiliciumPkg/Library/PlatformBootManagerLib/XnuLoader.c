@@ -55,6 +55,9 @@ Log (
 #define READ_SYSREG(Name) ({ UINT64 _Value; __asm__ volatile ("mrs %0, " #Name : "=r" (_Value)); _Value; })
 
 #ifndef XNU_NO_DISK_LOG
+STATIC UINT64  mLogLbaOffset;
+STATIC BOOLEAN mConnected;
+
 STATIC
 EFI_BLOCK_IO_PROTOCOL *
 FindPartition (
@@ -64,27 +67,57 @@ FindPartition (
   EFI_HANDLE *Handles;
   UINTN       Count;
 
-  Status = gBS->LocateHandleBuffer (ByProtocol, &gEfiPartitionInfoProtocolGuid, NULL, &Count, &Handles);
-  if (EFI_ERROR (Status)) {
-    return NULL;
+  mLogLbaOffset = 0;
+
+  if (!mConnected) {
+    mConnected = TRUE;
+    Status = gBS->LocateHandleBuffer (ByProtocol, &gEfiBlockIoProtocolGuid, NULL, &Count, &Handles);
+    if (!EFI_ERROR (Status)) {
+      for (UINTN i = 0; i < Count; i++) {
+        gBS->ConnectController (Handles[i], NULL, NULL, TRUE);
+      }
+      FreePool (Handles);
+    }
   }
 
-  for (UINTN i = 0; i < Count; i++) {
-    EFI_PARTITION_INFO_PROTOCOL *Info;
-    EFI_BLOCK_IO_PROTOCOL       *BlockIo;
+  Status = gBS->LocateHandleBuffer (ByProtocol, &gEfiPartitionInfoProtocolGuid, NULL, &Count, &Handles);
+  if (!EFI_ERROR (Status)) {
+    for (UINTN i = 0; i < Count; i++) {
+      EFI_PARTITION_INFO_PROTOCOL *Info;
+      EFI_BLOCK_IO_PROTOCOL       *BlockIo;
 
-    Status = gBS->HandleProtocol (Handles[i], &gEfiPartitionInfoProtocolGuid, (VOID **)&Info);
-    if (EFI_ERROR (Status) || Info->Type != PARTITION_TYPE_GPT) {
-      continue;
+      Status = gBS->HandleProtocol (Handles[i], &gEfiPartitionInfoProtocolGuid, (VOID **)&Info);
+      if (EFI_ERROR (Status) || Info->Type != PARTITION_TYPE_GPT) {
+        continue;
+      }
+
+      if (StrnCmp (Info->Info.Gpt.PartitionName, Name, 36) != 0) {
+        continue;
+      }
+
+      Status = gBS->HandleProtocol (Handles[i], &gEfiBlockIoProtocolGuid, (VOID **)&BlockIo);
+      if (!EFI_ERROR (Status)) {
+        return BlockIo;
+      }
     }
+  }
 
-    if (StrnCmp (Info->Info.Gpt.PartitionName, Name, 36) != 0) {
-      continue;
-    }
+  // Fallback for davinci when PartitionDxe is not bound: write directly to sda25 (logdump) on LUN 0.
+  Status = gBS->LocateHandleBuffer (ByProtocol, &gEfiBlockIoProtocolGuid, NULL, &Count, &Handles);
+  if (!EFI_ERROR (Status)) {
+    for (UINTN i = 0; i < Count; i++) {
+      EFI_BLOCK_IO_PROTOCOL *BlockIo;
 
-    Status = gBS->HandleProtocol (Handles[i], &gEfiBlockIoProtocolGuid, (VOID **)&BlockIo);
-    if (!EFI_ERROR (Status)) {
-      return BlockIo;
+      Status = gBS->HandleProtocol (Handles[i], &gEfiBlockIoProtocolGuid, (VOID **)&BlockIo);
+      if (EFI_ERROR (Status) || BlockIo->Media == NULL) {
+        continue;
+      }
+
+      if (!BlockIo->Media->LogicalPartition && BlockIo->Media->BlockSize == 4096 &&
+          BlockIo->Media->LastBlock + 1 == 15304704ULL) {
+        mLogLbaOffset = 1359872ULL;
+        return BlockIo;
+      }
     }
   }
 
@@ -229,7 +262,7 @@ FlushLog ()
   BlockSize = BlockIo->Media->BlockSize;
   WriteSize = ALIGN_VALUE (mLogLen + 1, BlockSize);
 
-  Status = BlockIo->WriteBlocks (BlockIo, BlockIo->Media->MediaId, 0, WriteSize, mLog);
+  Status = BlockIo->WriteBlocks (BlockIo, BlockIo->Media->MediaId, mLogLbaOffset, WriteSize, mLog);
   if (!EFI_ERROR (Status)) {
     BlockIo->FlushBlocks (BlockIo);
   }
@@ -266,8 +299,13 @@ StartPayloadLoader ()
   UnicodeSPrint (Message, sizeof (Message), L"HACKIOS DAVINCI: XNUP at 0x%lx, magic %08x, size %u\r\n", XNU_PAYLOAD_BASE, Header->Magic, Header->Size);
   gST->ConOut->OutputString (gST->ConOut, Message);
 #endif
+  Log ("[start_payload]\n");
+  Log ("base=%lx magic=%08x size=%x\n", (UINT64)XNU_PAYLOAD_BASE, Header->Magic, Header->Size);
+  FlushLog ();
 
   if (Header->Magic != XNU_PAYLOAD_MAGIC || Header->Size > XNU_PAYLOAD_MAX_SIZE) {
+    Log ("invalid magic or size\n");
+    FlushLog ();
     return;
   }
 
@@ -281,15 +319,22 @@ StartPayloadLoader ()
       break;
     }
 
+    Log ("entry name=%a size=%x\n", Entry->Name, Entry->Size);
+    FlushLog ();
+
     if (AsciiStrnCmp (Entry->Name, "loader.efi", sizeof (Entry->Name)) == 0) {
       EFI_HANDLE Handle;
 
       Status = gBS->LoadImage (FALSE, gImageHandle, NULL, Entry + 1, Entry->Size, &Handle);
+      Log ("LoadImage status=%r\n", Status);
+      FlushLog ();
       if (!EFI_ERROR (Status)) {
 #ifdef XNU_PAYLOAD_BOOT
         gST->ConOut->OutputString (gST->ConOut, L"HACKIOS DAVINCI: starting resident loader\r\n");
 #endif
         Status = gBS->StartImage (Handle, NULL, NULL);
+        Log ("StartImage status=%r\n", Status);
+        FlushLog ();
       }
 
 #ifdef XNU_PAYLOAD_BOOT
@@ -309,14 +354,6 @@ XnuLoaderMain ()
 {
   EFI_TIME Time;
 
-  // Normally does not return
-  StartPayloadLoader ();
-
-#ifdef XNU_PAYLOAD_BOOT
-  gST->ConOut->OutputString (gST->ConOut, L"HACKIOS DAVINCI: no resident loader running; reset in 30 seconds\r\n");
-  gBS->Stall (30000000);
-#endif
-
   mLog = AllocateZeroPool (LOG_SIZE);
   if (mLog != NULL) {
     Log ("== XNULOADER LOG v1 ==\n");
@@ -335,9 +372,21 @@ XnuLoaderMain ()
     LogPayload ();
     FlushLog ();
     LogPersistence ();
+    FlushLog ();
+  }
+
+  // Normally does not return
+  StartPayloadLoader ();
+
+  if (mLog != NULL) {
     Log ("== END ==\n");
     FlushLog ();
   }
+
+#ifdef XNU_PAYLOAD_BOOT
+  gST->ConOut->OutputString (gST->ConOut, L"HACKIOS DAVINCI: no resident loader running; reset in 5 seconds\r\n");
+  gBS->Stall (5000000);
+#endif
 
   // The phone is unattended: always come back to Android.
   gRT->ResetSystem (EfiResetCold, EFI_SUCCESS, 0, NULL);

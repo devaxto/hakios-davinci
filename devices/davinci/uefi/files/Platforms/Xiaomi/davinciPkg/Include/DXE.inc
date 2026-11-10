@@ -26,7 +26,7 @@
 
   INF Binaries/davinci/QcomPkg/Drivers/FontDxe/FontDxe.inf
   INF Binaries/davinci/QcomPkg/Drivers/EnvDxe/EnvDxe.inf
-  INF Binaries/davinci/QcomPkg/Drivers/QcomWDogDxe/QcomWDogDxe.inf
+# INF Binaries/davinci/QcomPkg/Drivers/QcomWDogDxe/QcomWDogDxe.inf
 
   INF ArmPkg/Drivers/ArmGicDxe/ArmGicDxe.inf
   INF ArmPkg/Drivers/TimerDxe/TimerDxe.inf
@@ -86,8 +86,8 @@
 
   INF Binaries/davinci/QcomPkg/Drivers/UsbfnDwc3Dxe/UsbfnDwc3Dxe.inf
 
-  INF Binaries/generic/QcomPkg/Drivers/XhciPciEmulationDxe/XhciPciEmulationDxe.inf
-  INF Binaries/generic/QcomPkg/Drivers/XhciDxe/XhciDxe.inf
+# INF Binaries/generic/QcomPkg/Drivers/XhciPciEmulationDxe/XhciPciEmulationDxe.inf
+# INF Binaries/generic/QcomPkg/Drivers/XhciDxe/XhciDxe.inf
 
   INF MdeModulePkg/Bus/Usb/UsbBusDxe/UsbBusDxe.inf
   INF MdeModulePkg/Bus/Usb/UsbKbDxe/UsbKbDxe.inf

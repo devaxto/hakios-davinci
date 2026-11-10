@@ -51,7 +51,7 @@ APRIORI DXE {
 
   INF MdeModulePkg/Universal/Variable/RuntimeDxe/VariableRuntimeDxe.inf
 
-  INF Binaries/davinci/QcomPkg/Drivers/QcomWDogDxe/QcomWDogDxe.inf
+# INF Binaries/davinci/QcomPkg/Drivers/QcomWDogDxe/QcomWDogDxe.inf
   INF Binaries/davinci/QcomPkg/Drivers/TLMMDxe/TLMMDxe.inf
   INF Binaries/davinci/QcomPkg/Drivers/SPMIDxe/SPMIDxe.inf
 
@@ -81,13 +81,15 @@ APRIORI DXE {
   INF Binaries/davinci/QcomPkg/Drivers/ChargerExDxe/ChargerExDxe.inf
   INF Binaries/davinci/QcomPkg/Drivers/UsbfnDwc3Dxe/UsbfnDwc3Dxe.inf
 
-  INF Binaries/generic/QcomPkg/Drivers/XhciPciEmulationDxe/XhciPciEmulationDxe.inf
-  INF Binaries/generic/QcomPkg/Drivers/XhciDxe/XhciDxe.inf
+# INF Binaries/generic/QcomPkg/Drivers/XhciPciEmulationDxe/XhciPciEmulationDxe.inf
+# INF Binaries/generic/QcomPkg/Drivers/XhciDxe/XhciDxe.inf
 
   INF MdeModulePkg/Bus/Usb/UsbBusDxe/UsbBusDxe.inf
   INF MdeModulePkg/Bus/Usb/UsbKbDxe/UsbKbDxe.inf
   INF MdeModulePkg/Bus/Usb/UsbMassStorageDxe/UsbMassStorageDxe.inf
 
+  INF Binaries/davinci/QcomPkg/Drivers/UsbMsdDxe/UsbMsdDxe.inf
+  INF Binaries/davinci/QcomPkg/Drivers/UsbDeviceDxe/UsbDeviceDxe.inf
   INF Binaries/davinci/QcomPkg/Drivers/UsbConfigDxe/UsbConfigDxe.inf
   INF Binaries/davinci/QcomPkg/Drivers/ButtonsDxe/ButtonsDxe.inf
   INF Binaries/davinci/QcomPkg/Drivers/TsensDxe/TsensDxe.inf

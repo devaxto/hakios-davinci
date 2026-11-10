@@ -231,12 +231,30 @@ print(const char *fmt, ...)
  * builds page tables that way, and a stale cached copy of those pages would
  * be what the table walker sees once caches are turned on again.
  */
+static int
+page_accessible(uint64_t va)
+{
+	uint64_t par;
+	__asm__ volatile ("at s1e1r, %1\n\tisb\n\tmrs %0, par_el1" : "=r" (par) : "r" (va));
+	return (par & 1ULL) == 0;
+}
+
 static void
 flush_dcache(uint64_t start, uint64_t end)
 {
 	uint64_t line = 4ULL << ((READ_SYSREG(CTR_EL0) >> 16) & 0xF);
-	for (uint64_t p = start & ~(line - 1); p < end; p += line) {
-		__asm__ volatile ("dc civac, %0" : : "r" (p));
+	for (uint64_t p = start & ~(line - 1); p < end; ) {
+		if (!page_accessible(p)) {
+			p = (p + 0x1000ULL) & ~0xFFFULL;
+			continue;
+		}
+		uint64_t page_end = (p + 0x1000ULL) & ~0xFFFULL;
+		if (page_end > end) {
+			page_end = end;
+		}
+		for (; p < page_end; p += line) {
+			__asm__ volatile ("dc civac, %0" : : "r" (p));
+		}
 	}
 	__asm__ volatile ("dsb sy");
 }
@@ -245,8 +263,18 @@ static void
 clean_dcache(uint64_t start, uint64_t end)
 {
 	uint64_t line = 4ULL << ((READ_SYSREG(CTR_EL0) >> 16) & 0xF);
-	for (uint64_t p = start & ~(line - 1); p < end; p += line) {
-		__asm__ volatile ("dc cvac, %0" : : "r" (p));
+	for (uint64_t p = start & ~(line - 1); p < end; ) {
+		if (!page_accessible(p)) {
+			p = (p + 0x1000ULL) & ~0xFFFULL;
+			continue;
+		}
+		uint64_t page_end = (p + 0x1000ULL) & ~0xFFFULL;
+		if (page_end > end) {
+			page_end = end;
+		}
+		for (; p < page_end; p += line) {
+			__asm__ volatile ("dc cvac, %0" : : "r" (p));
+		}
 	}
 	__asm__ volatile ("dsb sy");
 }

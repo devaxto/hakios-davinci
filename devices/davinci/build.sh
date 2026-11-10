@@ -21,7 +21,7 @@ images)
     ;;
 boot)
     mkdir -p out/davinci
-    python3 xnuloader/mkpayload.py -o out/davinci/usb-payload.bin loader.efi=xnuloader/loader.efi --usb
+    python3 xnuloader/mkpayload.py -o out/davinci/usb-payload.bin loader.efi=xnuloader/loader.efi --cmdline "platform=davinci" --usb
     python3 mkxnuimg.py -p out/davinci/usb-payload.bin -o out/davinci/boot.img
     ;;
 run) ./xl run ;;

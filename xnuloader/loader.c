@@ -3873,9 +3873,9 @@ fb_command(char *cmd)
 				uint64_t at = running_live->framebuffer + running_slide;
 				flush_dcache(at, at + 8);
 				uint64_t front = *(const volatile uint64_t *)(uintptr_t)at;
-				/* Only the raphael display reservation is used for page flipping. */
+				/* Only the raphael/davinci display reservation is used for page flipping. */
 				uint64_t bytes = (uint64_t)SCREEN.stride * SCREEN.height;
-				if (PLAT == &platform_raphael && bytes <= 0x02400000 && front >= 0x9c000000 &&
+				if ((PLAT == &platform_raphael || PLAT == &platform_davinci) && bytes <= 0x02400000 && front >= 0x9c000000 &&
 				    front <= 0x9e400000 - bytes) {
 					base = front;
 				}
@@ -4128,8 +4128,8 @@ efi_main(efi_handle image, efi_system_table *st)
 		SCREEN.height = GOP->mode->info->height;
 		SCREEN.stride = GOP->mode->info->pixels_per_scanline * 4;
 		if (named_platform == NULL) {
-			if (SCREEN.base == 0xE1000000ULL) {
-				PLAT = SCREEN.base == 0x9c000000 ? &platform_raphael : &platform_redwood;
+			if (SCREEN.base == 0xE1000000ULL || SCREEN.base == 0x9c000000ULL) {
+				PLAT = SCREEN.base == 0x9c000000ULL ? &platform_davinci : &platform_redwood;
 			} else {
 				ramfb_phone_screen();
 			}
@@ -4137,10 +4137,10 @@ efi_main(efi_handle image, efi_system_table *st)
 		print("display %d x %d at %x\n", (uint64_t)SCREEN.width, (uint64_t)SCREEN.height, SCREEN.base);
 	}
 	print("platform %s\n", PLAT->name);
-	persist_logs = PLAT == &platform_redwood;
+	persist_logs = PLAT == &platform_redwood || PLAT == &platform_davinci;
 
 	install_exception_hook();
-	if (PLAT == &platform_raphael) {
+	if (PLAT == &platform_raphael || PLAT == &platform_davinci) {
 		/* Retain ABL's command-mode pipeline and refresh it once per tear-check frame. */
 		volatile uint32_t *pp = (volatile uint32_t *)0x0ae71000ULL;
 		volatile uint32_t *ctl = (volatile uint32_t *)0x0ae02000ULL;

@@ -60,7 +60,8 @@ typedef struct {
 	void *get_next_monotonic_count;
 	efi_status (EFIAPI *stall)(uint64_t microseconds);
 	efi_status (EFIAPI *set_watchdog_timer)(uint64_t timeout, uint64_t code, uint64_t size, char16 *data);
-	void *connect_controller, *disconnect_controller, *open_protocol, *close_protocol, *open_protocol_information;
+	efi_status (EFIAPI *connect_controller)(efi_handle controller, efi_handle *driver_image, void *remaining_path, uint8_t recursive);
+	void *disconnect_controller, *open_protocol, *close_protocol, *open_protocol_information;
 	void *protocols_per_handle;
 	efi_status (EFIAPI *locate_handle_buffer)(int type, const efi_guid *guid, void *key, uint64_t *count, efi_handle **buf);
 	efi_status (EFIAPI *locate_protocol)(const efi_guid *guid, void *registration, void **iface);

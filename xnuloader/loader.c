@@ -254,34 +254,69 @@ clean_dcache(uint64_t start, uint64_t end)
 /* ------------------------------------------------------------------------ */
 /* Log persistence: raw write to a GPT partition (phone only)               */
 
+static uint64_t log_partition_lba_offset;
+
+static void
+connect_all_controllers(void)
+{
+	efi_handle *handles = NULL;
+	uint64_t count = 0;
+
+	if (!EFI_ERROR(BS->locate_handle_buffer(0 /* AllHandles */, NULL, NULL, &count, &handles))) {
+		for (uint64_t i = 0; i < count; i++) {
+			BS->connect_controller(handles[i], NULL, NULL, 1);
+		}
+		BS->free_pool(handles);
+	}
+}
+
 static efi_block_io *
 find_log_partition(void)
 {
 	static const efi_guid part_guid = EFI_PARTITION_INFO_GUID;
 	static const efi_guid blk_guid = EFI_BLOCK_IO_GUID;
 	static const char16 want[] = LOG_PARTITION;
+	static int connected;
 	efi_handle *handles;
 	uint64_t count;
 
-	if (EFI_ERROR(BS->locate_handle_buffer(ByProtocol, &part_guid, NULL, &count, &handles))) {
-		return NULL;
+	log_partition_lba_offset = 0;
+	if (!connected) {
+		connected = 1;
+		connect_all_controllers();
 	}
-	for (uint64_t i = 0; i < count; i++) {
-		efi_partition_info *info;
-		efi_block_io *bio;
-		int match = 1;
+	if (!EFI_ERROR(BS->locate_handle_buffer(ByProtocol, &part_guid, NULL, &count, &handles))) {
+		for (uint64_t i = 0; i < count; i++) {
+			efi_partition_info *info;
+			efi_block_io *bio;
+			int match = 1;
 
-		if (EFI_ERROR(BS->handle_protocol(handles[i], &part_guid, (void **)&info)) || info->type != 2) {
-			continue;
-		}
-		for (unsigned k = 0; k < sizeof(want) / sizeof(want[0]); k++) {
-			if (info->name[k] != want[k]) {
-				match = 0;
-				break;
+			if (EFI_ERROR(BS->handle_protocol(handles[i], &part_guid, (void **)&info)) || info->type != 2) {
+				continue;
+			}
+			for (unsigned k = 0; k < sizeof(want) / sizeof(want[0]); k++) {
+				if (info->name[k] != want[k]) {
+					match = 0;
+					break;
+				}
+			}
+			if (match && !EFI_ERROR(BS->handle_protocol(handles[i], &blk_guid, (void **)&bio))) {
+				return bio;
 			}
 		}
-		if (match && !EFI_ERROR(BS->handle_protocol(handles[i], &blk_guid, (void **)&bio))) {
-			return bio;
+	}
+	/* Fallback for davinci when PartitionDxe is not bound: write directly to sda25 (logdump) on LUN 0. */
+	if (!EFI_ERROR(BS->locate_handle_buffer(ByProtocol, &blk_guid, NULL, &count, &handles))) {
+		for (uint64_t i = 0; i < count; i++) {
+			efi_block_io *bio;
+			if (EFI_ERROR(BS->handle_protocol(handles[i], &blk_guid, (void **)&bio)) || bio->media == NULL) {
+				continue;
+			}
+			if (!bio->media->logical && bio->media->block_size == 4096 &&
+			    bio->media->last_block + 1 == 15304704ULL) {
+				log_partition_lba_offset = 1359872ULL;
+				return bio;
+			}
 		}
 	}
 	return NULL;
@@ -359,7 +394,7 @@ write_logs(const char *klog, uint64_t klog_len)
 		compose_logs(klog, klog_len);
 		return;
 	}
-	ws = bio->write_blocks(bio, bio->media->media_id, 0, len, out_buf);
+	ws = bio->write_blocks(bio, bio->media->media_id, log_partition_lba_offset, len, out_buf);
 
 	if (!EFI_ERROR(ws)) {
 		bio->flush_blocks(bio);
@@ -369,7 +404,7 @@ write_logs(const char *klog, uint64_t klog_len)
 		 * the copy the host fetches over USB, not into the partition, which already has the rest.
 		 */
 		if (len <= sizeof(block_buffer)) {
-			rs = bio->read_blocks(bio, bio->media->media_id, 0, len, block_buffer);
+			rs = bio->read_blocks(bio, bio->media->media_id, log_partition_lba_offset, len, block_buffer);
 			same = !EFI_ERROR(rs) && memcmp(block_buffer, out_buf, len) == 0;
 		}
 	}
@@ -3582,6 +3617,7 @@ usb_start(void)
 		BS->signal_event(event);
 		BS->close_event(event);
 	}
+	connect_all_controllers();
 	if (EFI_ERROR(BS->locate_protocol(&usb_guid, NULL, (void **)&USB))) {
 		print("usb: device protocol not found\n");
 		return 0;
@@ -4138,6 +4174,7 @@ efi_main(efi_handle image, efi_system_table *st)
 	}
 	print("platform %s\n", PLAT->name);
 	persist_logs = PLAT == &platform_redwood || PLAT == &platform_davinci;
+	flush_log();
 
 	install_exception_hook();
 	if (PLAT == &platform_raphael || PLAT == &platform_davinci) {

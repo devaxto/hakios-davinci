@@ -1,0 +1,6 @@
+# One RAM session, in the order the port is brought up: cores, storage, then manual iOS input.
+# The mount path (/redwood) is the small image's, the same on every port; only the label differs.
+/redwood/bin/hello_dyn davinci
+/redwood/bin/cpu_test
+/redwood/bin/rwtouch wait 20
+/bin/ps -A

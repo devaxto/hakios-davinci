@@ -1,0 +1,110 @@
+name: Build HakiOS for davinci (SM7150)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  loader:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install clang and lld
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld
+
+      - name: Build xnuloader (loader.efi)
+        run: |
+          sed -i 's/\r$//' xnuloader/*.sh xnuloader/*.py
+          chmod +x xnuloader/*.sh xnuloader/*.py
+          PLACEHOLDER=1 ./xnuloader/mkidentity.sh
+          ./xnuloader/build.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: davinci-loader
+          path: xnuloader/loader.efi
+          retention-days: 14
+
+  kernel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Normalize line endings and permissions
+        run: |
+          git ls-files '*.sh' xl 'xnu-deps/host/bin/*' '*.py' | xargs -r sed -i 's/\r$//'
+          git ls-files '*.sh' xl 'xnu-deps/host/bin/*' '*.py' | xargs -r chmod +x
+          git ls-files '*.patch' | xargs -r sed -i 's/\r$//'
+
+      - name: Install host dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld llvm flex bison m4 perl python3 autoconf automake ripgrep xz-utils curl git make gcc libtinfo6
+
+      - name: Install Theos Linux toolchain and iPhoneOS 16.5 SDK
+        run: |
+          mkdir -p "$HOME/theos/toolchain" "$HOME/theos/sdks"
+          curl -fsSL https://github.com/L1ghtmann/llvm-project/releases/latest/download/iOSToolchain-x86_64.tar.xz | tar -xJf - -C "$HOME/theos/toolchain/"
+          BIN="$HOME/theos/toolchain/linux/iphone/bin"
+          for t in ld nm otool strip lipo libtool nmedit ctf_insert codesign_allocate install_name_tool; do
+            if [ ! -x "$BIN/$t" ]; then
+              cand=$(ls "$BIN"/*-"$t" 2>/dev/null | head -1 || true)
+              if [ -n "$cand" ]; then
+                ln -sf "$(basename "$cand")" "$BIN/$t"
+              fi
+            fi
+          done
+          ls -la "$BIN"
+          git clone -q --depth 1 --filter=blob:none --sparse https://github.com/theos/sdks.git /tmp/theos-sdks
+          git -C /tmp/theos-sdks sparse-checkout set iPhoneOS16.5.sdk
+          mv /tmp/theos-sdks/iPhoneOS16.5.sdk "$HOME/theos/sdks/"
+          rm -rf /tmp/theos-sdks
+
+      - name: Apply XNU tree and build xnu-deps
+        run: |
+          export THEOS="$HOME/theos"
+          export LD_LIBRARY_PATH="$HOME/theos/toolchain/linux/iphone/lib:${LD_LIBRARY_PATH:-}"
+          export CFLAGS="-O2 -w -std=gnu11"
+          ./xnu/apply.sh
+          ./xnu-deps/setup.sh || {
+            for f in xnu-deps/*.log; do
+              [ -f "$f" ] && echo "=== $f ===" && tail -n 120 "$f"
+            done
+            exit 1
+          }
+
+      - name: Build ath10k + SAE Wi-Fi object (WCN3990)
+        run: |
+          export THEOS="$HOME/theos"
+          export LD_LIBRARY_PATH="$HOME/theos/toolchain/linux/iphone/lib:${LD_LIBRARY_PATH:-}"
+          source ./xnu-env.sh
+          python3 tools/mk-ath10k.py
+          ls -la xnu-deps/build/ath10k/out/ath10k.o
+
+      - name: Build XNU kernel, loader.efi, and hello ramdisk
+        run: |
+          export THEOS="$HOME/theos"
+          export LD_LIBRARY_PATH="$HOME/theos/toolchain/linux/iphone/lib:${LD_LIBRARY_PATH:-}"
+          source ./xnu-env.sh
+          WIFI_OBJECT="$PWD/xnu-deps/build/ath10k/out/ath10k.o" ./xnu-build.sh -j$(nproc) -k
+          PLACEHOLDER=1 ./xnuloader/mkidentity.sh
+          ./xnuloader/build.sh
+          make hello
+          mkdir -p dist
+          cp xnu-src/xnu-8796.121.2/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837 dist/
+          cp xnu-deps/build/ath10k/out/ath10k.o dist/
+          cp xnuloader/loader.efi dist/
+          cp userland/hello dist/
+          ls -lh dist/
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: davinci-kernel-bundle
+          path: dist/
+          retention-days: 14

@@ -1,0 +1,98 @@
+diff --git a/BootShim/BootShim.S b/BootShim/BootShim.S
+index 69e9979..6b34ff7 100644
+--- a/BootShim/BootShim.S
++++ b/BootShim/BootShim.S
+@@ -33,6 +33,27 @@ _CopyLoop:
+   stp   x2, x3, [x5], #16
+   subs  x6, x6, #16
+   b.ne  _CopyLoop
++
++#ifdef PAYLOAD_BASE
++  /* x4 now points just past the FD: an optional "XNUP" payload may follow */
++  ldr   w2, [x4]
++  movz  w3, #0x4E58
++  movk  w3, #0x5055, lsl #16
++  cmp   w2, w3
++  b.ne  _NoPayload
++  ldr   w6, [x4, #4]    /* Payload Size */
++  add   x6, x6, #23     /* Header + Round Up to 16 */
++  and   x6, x6, #~15
++  movz  x5, #(PAYLOAD_BASE >> 16), lsl #16
++
++_PayloadLoop:
++  ldp   x2, x3, [x4], #16
++  stp   x2, x3, [x5], #16
++  subs  x6, x6, #16
++  b.ne  _PayloadLoop
++
++_NoPayload:
++#endif
+   ldr   x5, _StackBase
+ 
+ _Entry:
+diff --git a/BootShim/Makefile b/BootShim/Makefile
+index 1543243..5d69255 100644
+--- a/BootShim/Makefile
++++ b/BootShim/Makefile
+@@ -3,6 +3,8 @@ TARGET            = aarch64-linux-gnu
+ CC                = clang
+ CFLAGS            = --target=$(TARGET)
+ OBJCOPY           = llvm-objcopy
++# Where the shim leaves an "XNUP" container appended to the FD (0xF0000000 for the XNU chain)
++PAYLOAD_BASE      = 0xF0000000
+ 
+ all: BootShim.elf BootShim.bin
+ 
+@@ -10,6 +12,6 @@ BootShim.bin: BootShim.elf
+ 	$(OBJCOPY) -O binary $< $@
+ 
+ BootShim.elf: BootShim.S
+-	$(CC) ${CFLAGS} -c $< -o $@ -DCREATE_FDT_POINTER=$(CREATE_FDT_POINTER) -DFDT_POINTER_ADDRESS=$(FDT_POINTER_ADDRESS) -DUEFI_BASE=$(UEFI_BASE) -DUEFI_SIZE=$(UEFI_SIZE)
++	$(CC) ${CFLAGS} -c $< -o $@ -DCREATE_FDT_POINTER=$(CREATE_FDT_POINTER) -DFDT_POINTER_ADDRESS=$(FDT_POINTER_ADDRESS) -DUEFI_BASE=$(UEFI_BASE) -DUEFI_SIZE=$(UEFI_SIZE) -DPAYLOAD_BASE=$(PAYLOAD_BASE)
+ 
+ BootShim.S:
+diff --git a/Silicon/Silicium/SiliciumPkg/Library/PlatformBootManagerLib/PlatformBootManagerLib.c b/Silicon/Silicium/SiliciumPkg/Library/PlatformBootManagerLib/PlatformBootManagerLib.c
+index a8f3485..e4112f2 100644
+--- a/Silicon/Silicium/SiliciumPkg/Library/PlatformBootManagerLib/PlatformBootManagerLib.c
++++ b/Silicon/Silicium/SiliciumPkg/Library/PlatformBootManagerLib/PlatformBootManagerLib.c
+@@ -30,6 +30,8 @@
+ 
+ #include <Configuration/BootDevices.h>
+ 
++#include "XnuLoader.h"
++
+ //
+ // Platform Consoles List
+ //
+@@ -261,6 +263,11 @@ PlatformBootManagerAfterConsole ()
+ 
+   // Proccess Capsules
+   ProcessCapsules ();
++
++#ifdef XNU_PAYLOAD_BOOT
++  // The RAM payload is the boot target; do not try installed boot options first.
++  XnuLoaderMain ();
++#endif
+ }
+ 
+ VOID
+diff --git a/Silicon/Silicium/SiliciumPkg/Library/PlatformBootManagerLib/PlatformBootManagerLib.inf b/Silicon/Silicium/SiliciumPkg/Library/PlatformBootManagerLib/PlatformBootManagerLib.inf
+index fa203c2..c1dc359 100644
+--- a/Silicon/Silicium/SiliciumPkg/Library/PlatformBootManagerLib/PlatformBootManagerLib.inf
++++ b/Silicon/Silicium/SiliciumPkg/Library/PlatformBootManagerLib/PlatformBootManagerLib.inf
+@@ -15,6 +15,7 @@
+ 
+ [Sources]
+   PlatformBootManagerLib.c
++  XnuLoader.c
+ 
+ [Packages]
+   MdePkg/MdePkg.dec
+@@ -27,6 +28,7 @@
+ [LibraryClasses]
+   DebugLib
+   BaseMemoryLib
++  BaseLib
+   UefiBootServicesTableLib
+   MemoryAllocationLib
+   MsBootOptionsLib
